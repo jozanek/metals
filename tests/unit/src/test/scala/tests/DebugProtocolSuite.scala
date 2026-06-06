@@ -78,6 +78,53 @@ class DebugProtocolSuite
     } yield assertNoDiff(output, "FooBarFoo")
   }
 
+  // Regression test for https://github.com/scalameta/metals/issues/2043
+  // A large burst of output emitted immediately before the JVM exits must not
+  // be dropped from the debug console.
+  test("output-before-shutdown") {
+    val lineCount = 5000
+    for {
+      _ <- initialize(
+        s"""/metals.json
+           |{
+           |  "a": {}
+           |}
+           |/a/src/main/scala/a/Main.scala
+           |package a
+           |object Main {
+           |  def main(args: Array[String]) = {
+           |    var i = 0
+           |    while (i < $lineCount) {
+           |      println("line-" + i)
+           |      i += 1
+           |    }
+           |    System.exit(0)
+           |  }
+           |}
+           |""".stripMargin
+      )
+      debugger <- server.startDebugging(
+        "a",
+        DebugSessionParamsDataKind.SCALA_MAIN_CLASS,
+        new ScalaMainClass("a.Main", emptyList(), emptyList()),
+      )
+      _ <- debugger.initialize
+      _ <- debugger.launch
+      _ <- debugger.configurationDone
+      _ <- debugger.shutdown
+      output <- debugger.allOutput
+    } yield {
+      val lines = output.linesIterator.toList
+      assertEquals(
+        lines.length,
+        lineCount,
+        s"expected $lineCount lines but got ${lines.length} - output was dropped before JVM shutdown",
+      )
+      assertEquals(lines.head, "line-0")
+      assertEquals(lines.last, s"line-${lineCount - 1}")
+    }
+  }
+
   test("attach") {
     val port = 5566
     def runningMain() = Future {
