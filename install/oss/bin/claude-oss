@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Start Claude Code for open-source work, without write credentials.
+# Usage: claude-oss [project] [claude args...]   (project defaults to "metals")
+#        claude-oss [project] --selftest          (check this layer without starting Claude)
+#
+# Layer 1 of 4 (02-operating-model.md, section 7). It removes the credentials that the
+# environment hands to child processes: gh logins, git credential helpers, askpass
+# programs, the SSH agent and SSH keys. It is not an OS boundary: a process that runs
+# as you can still read files such as ~/.ssh. For a hard boundary, use the Claude Code
+# sandbox with those paths denied, or a cloud session (see README, "Optional hardening").
+set -uo pipefail
+PROJECT="${1:-metals}"; [[ $# -gt 0 ]] && shift
+WS="$HOME/oss/$PROJECT"; REPO="$WS/repo"
+TOKEN_FILE="${OSS_GH_TOKEN_FILE:-$HOME/.config/oss/gh-readonly.token}"
+GH_EMPTY="$HOME/.config/oss/gh-empty"   # a gh config dir with no stored login
+
+[[ -d "$REPO/.git" ]] || { echo "no clone at $REPO" >&2; exit 2; }
+[[ -r "$TOKEN_FILE" ]] || { echo "missing $TOKEN_FILE: create a fine-grained token with 'Public repositories (read-only)' access" >&2; exit 2; }
+
+# The workspace's own files must never be visible to git inside the clone.
+STATUS="$(git -C "$REPO" status --porcelain --untracked-files=all)" || { echo "git status failed in $REPO" >&2; exit 2; }
+if grep -E '(^|[ /])(CLAUDE(\.local)?\.md|\.claude/|\.mcp\.json|work/|notes/|templates/)' <<<"$STATUS" >/dev/null; then
+  echo "workspace files are visible to git in $REPO; fix .git/info/exclude, or move them to $WS" >&2; exit 2
+fi
+
+# gh: only the read-only token, and no stored login to fall back to if GH_TOKEN is unset.
+mkdir -p "$GH_EMPTY" && chmod 700 "$GH_EMPTY"
+GH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+# Any other GitHub token in the environment (GITHUB_PERSONAL_ACCESS_TOKEN, GH_ENTERPRISE_TOKEN,
+# HOMEBREW_GITHUB_API_TOKEN, ...) would let a curl call write; remove them all.
+for v in $(compgen -e); do
+  if [[ "$v" =~ (GH|GITHUB).*(TOKEN|PAT|KEY|SECRET|AUTH) && "$v" != GH_TOKEN && "$v" != GITHUB_TOKEN ]]; then unset "$v"; fi
+done
+export GH_TOKEN GITHUB_TOKEN="$GH_TOKEN" GH_CONFIG_DIR="$GH_EMPTY"
+# git over HTTPS: no credential helpers (the second key clears the github.com helper that
+# `gh auth setup-git` installs), no askpass program (IDE terminals export one), no prompt.
+export GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0="" \
+  GIT_CONFIG_KEY_1=credential.https://github.com.helper GIT_CONFIG_VALUE_1=""
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="" SSH_ASKPASS=""
+unset VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_ASKPASS_EXTRA_ARGS VSCODE_GIT_IPC_HANDLE GIT_SSH SSH_AUTH_SOCK
+# git over SSH: ignore ~/.ssh/config, no agent, no keys, no interactive authentication.
+export GIT_SSH_COMMAND="ssh -F /dev/null -o BatchMode=yes -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+export OSS_GUARD_ROOT="$HOME/oss" OSS_WORKSPACE="$WS"
+
+selftest() {
+  local fails=0 out rc fork hw
+  report() { if [[ "$1" == PASS ]]; then echo "PASS  $2"; elif [[ "$1" == SKIP ]]; then echo "SKIP  $2"; else echo "FAIL  $2"; fails=$((fails + 1)); fi; }
+  out="$(gh auth status 2>&1)"
+  if [[ "$out" == *"GH_TOKEN"* && "$out" != *"invalid"* ]]; then report PASS "gh uses the read-only token from GH_TOKEN"; else report FAIL "gh does not use a valid GH_TOKEN: $out"; fi
+  leftover="$(compgen -e | grep -E '(GH|GITHUB).*(TOKEN|PAT|KEY|SECRET|AUTH)' | grep -vxE 'GH_TOKEN|GITHUB_TOKEN' | tr '\n' ' ')"
+  [[ -z "$leftover" ]] && report PASS "no other GitHub token variables in the environment" || report FAIL "other GitHub token variables remain: $leftover"
+  env -u GH_TOKEN -u GITHUB_TOKEN gh auth status >/dev/null 2>&1; rc=$?
+  [[ $rc -ne 0 ]] && report PASS "without GH_TOKEN, gh has no stored login" || report FAIL "gh falls back to a stored login when GH_TOKEN is unset"
+  # The only way to prove a fine-grained token cannot write is to try a write. This sends one
+  # PATCH that re-sets has_wiki to its current value (a no-op even if it were accepted).
+  # Run it only on your own machine: in a cloud session a proxy may hold other credentials.
+  # Probe your own fork (where a write-capable token WOULD succeed), not origin: a refusal from
+  # someone else's repository proves nothing. Only GitHub's fine-grained-token refusal counts.
+  local login answer=n probed=0
+  login="$(gh api user -q .login 2>/dev/null)"; fork="${login:+$login/metals}"
+  if [[ -n "$fork" ]] && hw="$(gh api "repos/$fork" -q .has_wiki 2>/dev/null)"; then
+    printf 'Send one no-op PATCH to repos/%s (has_wiki=%s, its current value) to prove the token cannot write? [y/N] ' "$fork" "$hw"
+    read -r answer </dev/tty || answer=n
+    echo
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+      probed=1
+      out="$(gh api -X PATCH "repos/$fork" -F has_wiki="$hw" 2>&1)"; rc=$?
+      if [[ $rc -ne 0 && "$out" == *"Resource not accessible by personal access token"* ]]; then
+        report PASS "the token cannot write to $fork"
+      else
+        report FAIL "the write probe on $fork was not refused as a read-only token would be: $out"
+      fi
+    fi
+  fi
+  [[ $probed -eq 1 ]] || { echo "NOT VERIFIED  the write probe did not run (no fork found, or you answered no)"; fails=$((fails + 1)); }
+  out="$(git -C "$REPO" push --dry-run origin HEAD 2>&1)"; rc=$?
+  if [[ $rc -ne 0 && "$out" =~ (terminal\ prompts\ disabled|Permission\ denied|Authentication\ failed|could\ not\ read\ Username|403) ]]; then
+    report PASS "git cannot authenticate a push to origin"
+  else
+    report FAIL "git push --dry-run did not fail on authentication: $out"
+  fi
+  out="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>&1)"; rc=$?
+  [[ $rc -ne 0 ]] && report PASS "no git credential helper or askpass answers for github.com" || report FAIL "git still gets credentials for github.com"
+  if command -v ssh >/dev/null 2>&1; then
+    out="$($GIT_SSH_COMMAND -T git@github.com 2>&1)"
+    [[ "$out" != *"successfully authenticated"* ]] && report PASS "ssh has no usable identity for github.com" || report FAIL "ssh can still authenticate: $out"
+  else
+    report SKIP "ssh is not installed"
+  fi
+  [[ $fails -eq 0 ]] && echo "layer 1 OK" || echo "layer 1 has $fails failure(s): do not start sessions until fixed"
+  return $fails
+}
+
+if [[ "${1:-}" == "--selftest" ]]; then selftest; exit $?; fi
+cd "$REPO" || exit 2
+exec claude "$@"

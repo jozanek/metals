@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Monitor|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "python3 -I \"$HOME/.claude/hooks/guard-github-writes.py\"" }
+        ]
+      },
+      {
+        "matcher": "mcp__.*",
+        "hooks": [
+          { "type": "command", "command": "python3 -I \"$HOME/.claude/hooks/guard-github-writes.py\"" }
+        ]
+      }
+    ]
+  }
+}

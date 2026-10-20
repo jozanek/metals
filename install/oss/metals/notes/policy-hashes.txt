@@ -1,0 +1,9 @@
+# sha256 of the policy files last read by the human (update after you read a change)
+# date: 2026-10-18
+8d220ad5be86afe894341cd8e4b219cd718cfb04bae095816fe7d295f8b34182  org/CONTRIBUTING.md (scalameta/.github@632e5cc)
+4ee540e66e2501e36a7dde537e871b5e18894e0b6e820be241f55e8cbcd0165e  org/AGENTS.md (scalameta/.github@632e5cc)
+21944fc96046309fd0624a7331169decacda3e33d7bade8da4542920a4b80eef  repo/AGENTS.md (scalameta/metals main@8c095fe5)
+2b7561470dc83eea4e4612dacb20207e4da6866dabddf800cc4911fa7f45cab6  repo/AGENTS.md (scalameta/metals main-v2@d6eb032e)
+bc23607f024bf58e125e0dcc80032475e1304156d4966c1b09dd2aad960d601c  repo/CONTRIBUTING.md (scalameta/metals main@8c095fe5)
+09fac31114a9e835bff00e34238a62d87674a1ac0eea8ba74d0f2b2016d5a193  repo/docs/contributors/getting-started.md (scalameta/metals main@8c095fe5)
+6fbcc7a596a68a1a53b898da7682de49d044748b72993005641010f8292870af  repo/docs/contributors/getting-started.md (scalameta/metals main-v2@d6eb032e)

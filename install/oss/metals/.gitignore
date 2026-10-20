@@ -1,0 +1,5 @@
+# For when you make ~/oss/metals a git repository with an origin (you push it; the agent never does).
+# The Metals clone has its own history and must never be committed here.
+repo/
+# Bulk API dumps from mine-reviews.sh; summary.jsonl and comments.jsonl stay versioned.
+data/raw/
